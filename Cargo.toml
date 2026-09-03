@@ -1,0 +1,22 @@
+[package]
+name = "qt-monitor-rust"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "qt-monitor-rust"
+path = "src/main.rs"
+
+[dependencies]
+sysinfo = "0.30"
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+# Async SQLite database driver
+sqlx = { version = "0.7", features = [ "runtime-tokio-native-tls", "sqlite", "chrono" ] }
+
+# macOS SMC hardware sensor reader
+[target.'cfg(target_os = "macos")'.dependencies]
+smc = "0.4"
