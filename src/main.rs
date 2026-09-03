@@ -61,8 +61,8 @@ fn gather_metrics(sys: &mut System, components: &mut Components) -> TelemetryPay
     #[cfg(target_os = "macos")]
     {
         // Query Apple SMC keys for CPU temperature
-        if let Ok(smc_inst) = smc::Smc::new() {
-            if let Ok(temp) = smc_inst.cpu_temperature() {
+        if let Ok(smc_inst) = smc::SMC::new() {
+            if let Ok(temp) = smc_inst.cpu_temperature(0) {
                 cpu_temp_c = temp as f32;
             }
         }
