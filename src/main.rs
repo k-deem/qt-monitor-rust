@@ -5,7 +5,6 @@ mod db;
 mod scanner;
 
 // Import Utc from chrono to generate ISO-8601 standardized timestamps.
-use chrono::Utc;
 
 // Import Serialize trait from serde to enable automatic struct-to-JSON serialization.
 use serde::Serialize;
