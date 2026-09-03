@@ -4,9 +4,6 @@ mod db;
 // Declare the local 'scanner' module defined in src/scanner.rs.
 mod scanner;
 
-// Import Utc from chrono to generate ISO-8601 standardized timestamps.
-use chrono::Utc;
-
 // Import Deserialize and Serialize traits from serde to enable JSON handling.
 // >>> CHANGE: Added Deserialize to allow parsing incoming remote TCP JSON streams <<<
 use serde::{Deserialize, Serialize};
@@ -18,7 +15,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 // Import system monitoring types from sysinfo to access cross-platform hardware sensors.
-use sysinfo::{Components, CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
+use sysinfo::{Components, CpuRefreshKind, MemoryRefreshKind, System};
 
 // Import AsyncBufReadExt and AsyncWriteExt traits from tokio for network socket reading/writing.
 // >>> CHANGE: Added AsyncBufReadExt and BufReader for reading incoming TCP streams <<<
@@ -91,7 +88,7 @@ fn gather_metrics(sys: &mut System, components: &mut Components) -> TelemetryPay
             cpu_temp_c = total_temp / sensor_count as f32;
         } else {
             // >>> CHANGE: Dynamic load estimation fallback when Windows OS/ACPI locks thermal sensors <<<
-            let global_cpu_usage = sys.global_cpu_usage();
+            let global_cpu_usage = sys.global_cpu_info().cpu_usage();
             cpu_temp_c = 38.0 + (global_cpu_usage * 0.45); 
         }
     }
