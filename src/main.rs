@@ -5,9 +5,11 @@ mod db;
 mod scanner;
 
 // Import Utc from chrono to generate ISO-8601 standardized timestamps.
+use chrono::Utc;
 
-// Import Serialize trait from serde to enable automatic struct-to-JSON serialization.
-use serde::Serialize;
+// Import Deserialize and Serialize traits from serde to enable JSON handling.
+// >>> CHANGE: Added Deserialize to allow parsing incoming remote TCP JSON streams <<<
+use serde::{Deserialize, Serialize};
 
 // Import SocketAddr for network address parsing.
 use std::net::SocketAddr;
@@ -18,14 +20,17 @@ use std::time::Duration;
 // Import system monitoring types from sysinfo to access cross-platform hardware sensors.
 use sysinfo::{Components, CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 
-// Import AsyncWriteExt trait from tokio to enable asynchronous stream writing over TCP sockets.
-use tokio::io::AsyncWriteExt;
+// Import AsyncBufReadExt and AsyncWriteExt traits from tokio for network socket reading/writing.
+// >>> CHANGE: Added AsyncBufReadExt and BufReader for reading incoming TCP streams <<<
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-// Import TcpListener from tokio for non-blocking network socket handling.
-use tokio::net::TcpListener;
+// Import TcpListener and TcpStream from tokio for non-blocking network socket handling.
+// >>> CHANGE: Added TcpStream to allow outbound connection to remote agents <<<
+use tokio::net::{TcpListener, TcpStream};
 
 /// Data structure defining the JSON schema transferred over TCP and stored in SQLite.
-#[derive(Serialize, Debug, Clone)]
+// >>> CHANGE: Added Deserialize to enable decoding remote payloads into Rust structs <<<
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct TelemetryPayload {
     hostname: String,
     timestamp: String,
@@ -38,21 +43,20 @@ struct TelemetryPayload {
 
 /// Collects hardware metrics from OS counters across Windows, macOS, and Linux.
 fn gather_metrics(sys: &mut System, components: &mut Components) -> TelemetryPayload {
-    sys.refresh_specifics(
-        RefreshKind::new()
-            .with_cpu(CpuRefreshKind::everything())
-            .with_memory(MemoryRefreshKind::everything()),
-    );
+    // >>> CHANGE: Switched to explicit CPU/Memory specific refresh passes to capture dynamic load changes <<<
+    sys.refresh_cpu_specifics(CpuRefreshKind::everything());
+    sys.refresh_memory_specifics(MemoryRefreshKind::everything());
     components.refresh_list();
 
     let hostname = System::host_name().unwrap_or_else(|| "Unknown-Host".to_string());
 
+    // >>> CHANGE: Calculate live dynamic average CPU clock across active cores <<<
     let cpus = sys.cpus();
     let avg_clock_mhz = if !cpus.is_empty() {
         let total_freq: u64 = cpus.iter().map(|c| c.frequency()).sum();
         total_freq as f32 / cpus.len() as f32
     } else {
-        2400.0
+        0.0
     };
 
     // Platform-specific CPU Temperature Fetching
@@ -83,11 +87,13 @@ fn gather_metrics(sys: &mut System, components: &mut Components) -> TelemetryPay
             }
         }
 
-        cpu_temp_c = if sensor_count > 0 {
-            total_temp / sensor_count as f32
+        if sensor_count > 0 {
+            cpu_temp_c = total_temp / sensor_count as f32;
         } else {
-            42.5 // Default baseline if restricted
-        };
+            // >>> CHANGE: Dynamic load estimation fallback when Windows OS/ACPI locks thermal sensors <<<
+            let global_cpu_usage = sys.global_cpu_usage();
+            cpu_temp_c = 38.0 + (global_cpu_usage * 0.45); 
+        }
     }
 
     let bytes_to_gb = 1024.0 * 1024.0 * 1024.0;
@@ -101,7 +107,7 @@ fn gather_metrics(sys: &mut System, components: &mut Components) -> TelemetryPay
         cpu_temp_c: (cpu_temp_c * 10.0).round() / 10.0,
         memory_used_gb: (used_mem_gb * 100.0).round() / 100.0,
         memory_total_gb: (total_mem_gb * 100.0).round() / 100.0,
-        os_name: System::name().unwrap_or_else(|| "Unknown OS".to_string()),
+        os_name: System::name().unwrap_or_else(|| "Generic OS".to_string()),
     }
 }
 
@@ -118,7 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let pool_clone = db_pool.clone();
 
-    // Step 3: Background telemetry logger & network server loop
+    // Step 3: Background local telemetry logger & network server loop
     tokio::spawn(async move {
         let mut sys = System::new_all();
         let mut components = Components::new_with_refreshed_list();
@@ -131,6 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         loop {
             tokio::select! {
+                // Task A: Log local node metrics to SQLite every 2 seconds
                 _ = interval.tick() => {
                     let payload = gather_metrics(&mut sys, &mut components);
                     let _ = db::insert_snapshot(
@@ -146,6 +153,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .await;
                 }
 
+                // Task B: Serve telemetry payload to incoming TCP clients
                 accept_result = listener.accept() => {
                     if let Ok((mut socket, peer_addr)) = accept_result {
                         println!("Connection received from: {}", peer_addr);
@@ -163,11 +171,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Step 4: Scan local subnet
+    // Step 4: Scan local subnet for active nodes
     let subnet_prefix = "192.168.1";
     println!("Scanning local subnet {}.x for active monitor services...", subnet_prefix);
     let devices = scanner::scan_subnet(subnet_prefix, 9090).await;
     println!("Discovered {} target device(s): {:?}", devices.len(), devices);
+
+    // >>> CHANGE: Added remote ingestion loop to connect to discovered nodes and write to historian.db <<<
+    for device in devices {
+        // Skip local loopback or local host IP to avoid duplicate logging
+        if device.ip == "127.0.0.1" || device.ip == "192.168.1.107" {
+            continue;
+        }
+
+        let pool_remote = db_pool.clone();
+        let remote_ip = device.ip.clone();
+
+        tokio::spawn(async move {
+            loop {
+                // Attempt connection to the remote node's telemetry port
+                if let Ok(mut stream) = TcpStream::connect(format!("{}:9090", remote_ip)).await {
+                    let mut reader = BufReader::new(&mut stream);
+                    let mut line = String::new();
+
+                    // Read streaming JSON telemetry lines from remote node
+                    while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
+                        if let Ok(payload) = serde_json::from_str::<TelemetryPayload>(&line) {
+                            let _ = db::insert_snapshot(
+                                &pool_remote,
+                                &payload.hostname,
+                                &payload.timestamp,
+                                payload.cpu_clock_mhz,
+                                payload.cpu_temp_c,
+                                payload.memory_used_gb,
+                                payload.memory_total_gb,
+                                &payload.os_name,
+                            ).await;
+                        }
+                        line.clear();
+                    }
+                }
+                // Wait 5 seconds before attempting reconnect if remote stream breaks
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+        });
+    }
 
     tokio::signal::ctrl_c().await?;
     Ok(())
