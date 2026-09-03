@@ -61,7 +61,7 @@ fn gather_metrics(sys: &mut System, components: &mut Components) -> TelemetryPay
 
     #[cfg(target_os = "macos")]
     {
-        // Query Apple SMC keys for CPU temperature (e.g., 'TC0P', 'Tp09', 'CPU Temperature')
+        // Query Apple SMC keys for CPU temperature
         if let Ok(smc_inst) = smc::Smc::new() {
             if let Ok(temp) = smc_inst.cpu_temperature() {
                 cpu_temp_c = temp as f32;
@@ -102,29 +102,7 @@ fn gather_metrics(sys: &mut System, components: &mut Components) -> TelemetryPay
         cpu_temp_c: (cpu_temp_c * 10.0).round() / 10.0,
         memory_used_gb: (used_mem_gb * 100.0).round() / 100.0,
         memory_total_gb: (total_mem_gb * 100.0).round() / 100.0,
-        os_name: System::name().unwrap_or_else(|| "macOS".to_string()),
-    }
-}
-
-    let cpu_temp_c = if sensor_count > 0 {
-        total_temp / sensor_count as f32
-    } else {
-        42.5 // Baseline value if OS restricts sensor access
-    };
-
-    // Calculate RAM metrics
-    let bytes_to_gb = 1024.0 * 1024.0 * 1024.0;
-    let total_mem_gb = sys.total_memory() as f64 / bytes_to_gb;
-    let used_mem_gb = sys.used_memory() as f64 / bytes_to_gb;
-
-    TelemetryPayload {
-        hostname,
-        timestamp: Utc::now().to_rfc3339(),
-        cpu_clock_mhz: (avg_clock_mhz * 10.0).round() / 10.0,
-        cpu_temp_c: (cpu_temp_c * 10.0).round() / 10.0,
-        memory_used_gb: (used_mem_gb * 100.0).round() / 100.0,
-        memory_total_gb: (total_mem_gb * 100.0).round() / 100.0,
-        os_name: System::name().unwrap_or_else(|| "Windows".to_string()),
+        os_name: System::name().unwrap_or_else(|| "Unknown OS".to_string()),
     }
 }
 
